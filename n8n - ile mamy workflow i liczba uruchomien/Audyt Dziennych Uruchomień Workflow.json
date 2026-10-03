@@ -1,0 +1,750 @@
+{
+  "name": "Audyt Dziennych Uruchomień Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📊 Audyt Dziennych Uruchomień Workflow (V2.5)\n\n### 🚀 Architektura\n1. **Auto-DDL:** natywny node Data Table zakłada tabelę `Audyt Workflow - Dzienne Uruchomienia` tylko jeśli nie istnieje (createIfNotExists).\n2. **Podwójna paginacja:** pobiera workflowy i egzekucje (REST API, po 250) z kursorem. Egzekucje filtruje API (`startedAfter`/`startedBefore`), kod dodatkowo odrzuca rekordy spoza dnia. Bezpiecznik: limit `maxPages` i wykrywanie powtórzonego kursora (błąd → error workflow).\n3. **Czyste fakty dzienne:** zlicza wykonania i sukcesy per workflow w zadanym dniu.\n4. **Idempotentny zapis:** Skomponuj Wyniki → usuń wpisy audytowanego dnia → wstaw nowe. Ponowne uruchomienie dla tego samego dnia nadpisuje go (nie dubluje). Brak transakcji: błąd przy wstawianiu zostawia dzień pusty → alert z error workflow, naprawa = ponowne uruchomienie.\n5. **Retencja:** usuwa wiersze, których `date` (dzień audytowany) jest starsza niż `retentionDays` dni.\n6. **Backfill:** ustaw `targetDateOverride` w ⚙️ Konfiguracja (walidowana data z przeszłości; puste = wczoraj).\n\n### ℹ️ Uwaga\nUdane uruchomienia tego workflow nie są zapisywane celowo (duże odpowiedzi /workflows). Dowód uruchomienia = wiersze z wczorajszą datą w tabeli.",
+        "height": 368,
+        "width": 1800
+      },
+      "id": "sticky-note-info",
+      "name": "Instrukcja i Architektura",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        208,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        352
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==========================================================\n// ⚙️ GŁÓWNA KONFIGURACJA AUDYTU WORKFLOW\n// ==========================================================\n\nconst baseUrl = 'http://localhost:5678';\nconst retentionDays = 90;\nconst dataTableName = 'Audyt Workflow - Dzienne Uruchomienia';\n// Bezpiecznik paginacji: maks. liczba stron (po 250 rekordów) na pętlę\nconst maxPages = 400;\n// Backfill: wpisz datę 'yyyy-MM-dd', aby audytować konkretny dzień. Puste = wczoraj.\nconst targetDateOverride = '';\n\nlet targetDateObj;\nif (targetDateOverride) {\n  targetDateObj = /^\\d{4}-\\d{2}-\\d{2}$/.test(targetDateOverride)\n    ? DateTime.fromFormat(targetDateOverride, 'yyyy-MM-dd', { zone: 'Europe/Warsaw' })\n    : null;\n  if (!targetDateObj || !targetDateObj.isValid) {\n    throw new Error(`[Audyt] Niepoprawna data targetDateOverride: '${targetDateOverride}' (oczekiwano istniejącej daty yyyy-MM-dd).`);\n  }\n  if (targetDateObj.startOf('day') >= DateTime.now().setZone('Europe/Warsaw').startOf('day')) {\n    throw new Error(`[Audyt] targetDateOverride '${targetDateOverride}' musi być dniem z przeszłości.`);\n  }\n} else {\n  targetDateObj = DateTime.now().setZone('Europe/Warsaw').minus({ days: 1 });\n}\n\nconst targetDate = targetDateObj.toFormat('yyyy-MM-dd');\nconst executionsStartedAfter = targetDateObj.startOf('day').toUTC().toISO();\nconst executionsStartedBefore = targetDateObj.endOf('day').toUTC().toISO();\n\nreturn [{\n  json: {\n    baseUrl: baseUrl,\n    retentionDays: retentionDays,\n    dataTableName: dataTableName,\n    maxPages: maxPages,\n    targetDate: targetDate,\n    executionsStartedAfter: executionsStartedAfter,\n    executionsStartedBefore: executionsStartedBefore\n  }\n}];"
+      },
+      "id": "code-config",
+      "name": "⚙️ Konfiguracja",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first()?.json || {};\nconst tableId = input.id;\n\nif (!tableId) {\n  throw new Error('[Audyt] Nie udało się ustalić ID tabeli w Data Tables.');\n}\n\nreturn [{ json: { tableId: String(tableId) } }];"
+      },
+      "id": "code-resolve-table-id",
+      "name": "Ustal Table ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    cursor: null\n  }\n}];"
+      },
+      "id": "code-init-workflows",
+      "name": "Inicjalizacja Workflows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('⚙️ Konfiguracja').first().json.baseUrl }}/api/v1/workflows?limit=250&excludePinnedData=true{{ $json.cursor ? '&cursor=' + encodeURIComponent($json.cursor) : '' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "http-get-workflows",
+      "name": "Pobierz Stronę Workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "position": [
+        1120,
+        448
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "k8jt6wl1DyyPcdec",
+          "name": "n8n Internal API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first()?.json || {};\nconst list = Array.isArray(resp.data) ? resp.data : (Array.isArray(resp) ? resp : []);\nconst nextCursor = resp.nextCursor || null;\nconst selfId = String($workflow.id);\nconst maxPages = Number($('⚙️ Konfiguracja').first()?.json?.maxPages) || 400;\n\nlet map = {};\nlet page = 1;\nlet prevCursor = null;\ntry {\n  const prev = $('Kolejny Kursor Workflows').last()?.json;\n  if (prev && prev.workflowMap && typeof prev.workflowMap === 'object') {\n    map = { ...prev.workflowMap };\n    page = (Number(prev.page) || 0) + 1;\n    prevCursor = prev.cursor || null;\n  }\n} catch (e) {}\n\n// Bezpiecznik paginacji\nif (nextCursor && nextCursor === prevCursor) {\n  throw new Error(`[Audyt] API workflows zwróciło ten sam kursor ponownie (strona ${page}) – przerwano, by uniknąć nieskończonej pętli.`);\n}\nif (nextCursor && page >= maxPages) {\n  throw new Error(`[Audyt] Przekroczono limit ${maxPages} stron workflows – zwiększ maxPages w Konfiguracji.`);\n}\n\nfor (const wf of list) {\n  if (!wf || !wf.id || String(wf.id) === selfId) continue;\n  map[String(wf.id)] = {\n    name: String(wf.name || ''),\n    active: Boolean(wf.active)\n  };\n}\n\nreturn [{\n  json: {\n    workflowMap: map,\n    page: page,\n    nextCursor: nextCursor,\n    hasMore: Boolean(nextCursor)\n  }\n}];"
+      },
+      "id": "code-eval-workflows",
+      "name": "Zbierz i Oceń Workflows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-more-wf",
+              "leftValue": "={{ $json.hasMore }}",
+              "operator": {
+                "operation": "equals",
+                "type": "boolean"
+              },
+              "rightValue": true
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
+        },
+        "options": {}
+      },
+      "id": "if-more-workflows",
+      "name": "Czy Kolejna Strona Workflows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1568,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const curr = $input.first()?.json || {};\nreturn [{\n  json: {\n    cursor: curr.nextCursor,\n    page: curr.page,\n    workflowMap: curr.workflowMap\n  }\n}];"
+      },
+      "id": "code-next-workflows-cursor",
+      "name": "Kolejny Kursor Workflows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    cursor: null\n  }\n}];"
+      },
+      "id": "code-init-executions",
+      "name": "Inicjalizacja Egzekucji",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('⚙️ Konfiguracja').first().json.baseUrl }}/api/v1/executions?limit=250&startedAfter={{ $('⚙️ Konfiguracja').first().json.executionsStartedAfter }}&startedBefore={{ $('⚙️ Konfiguracja').first().json.executionsStartedBefore }}{{ $json.cursor ? '&cursor=' + encodeURIComponent($json.cursor) : '' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "http-get-executions",
+      "name": "Pobierz Stronę Egzekucji",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "position": [
+        2016,
+        336
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "k8jt6wl1DyyPcdec",
+          "name": "n8n Internal API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('⚙️ Konfiguracja').first()?.json || {};\nconst resp = $input.first()?.json || {};\nconst list = Array.isArray(resp.data) ? resp.data : (Array.isArray(resp) ? resp : []);\nconst nextCursor = resp.nextCursor || null;\nconst selfId = String($workflow.id);\nconst maxPages = Number(cfg.maxPages) || 400;\n\n// Zakres filtrowany już przez API (startedAfter/startedBefore) - tu tylko zabezpieczenie.\nconst rangeStart = new Date(cfg.executionsStartedAfter).getTime();\nconst rangeEnd = new Date(cfg.executionsStartedBefore).getTime();\n\nlet counts = {};\nlet totalProcessed = 0;\nlet page = 1;\nlet prevCursor = null;\ntry {\n  const prev = $('Kolejny Kursor Egzekucji').last()?.json;\n  if (prev && prev.dailyCounts) {\n    counts = { ...prev.dailyCounts };\n    totalProcessed = Number(prev.totalProcessed) || 0;\n    page = (Number(prev.page) || 0) + 1;\n    prevCursor = prev.cursor || null;\n  }\n} catch (e) {}\n\n// Bezpiecznik paginacji\nif (nextCursor && nextCursor === prevCursor) {\n  throw new Error(`[Audyt] API egzekucji zwróciło ten sam kursor ponownie (strona ${page}) – przerwano, by uniknąć nieskończonej pętli.`);\n}\nif (nextCursor && page >= maxPages) {\n  throw new Error(`[Audyt] Przekroczono limit ${maxPages} stron egzekucji – zwiększ maxPages w Konfiguracji.`);\n}\n\nfor (const e of list) {\n  if (!e || !e.workflowId) continue;\n  const ts = new Date(e.startedAt || e.createdAt || 0).getTime();\n  if (ts < rangeStart || ts > rangeEnd) continue;\n\n  const wfId = String(e.workflowId);\n  if (wfId === selfId) continue;\n\n  if (!counts[wfId]) {\n    counts[wfId] = { total: 0, success: 0 };\n  }\n  counts[wfId].total++;\n  if (e.status === 'success') {\n    counts[wfId].success++;\n  }\n  totalProcessed++;\n}\n\nreturn [{\n  json: {\n    dailyCounts: counts,\n    totalProcessed: totalProcessed,\n    page: page,\n    nextCursor: nextCursor,\n    hasMore: Boolean(nextCursor)\n  }\n}];"
+      },
+      "id": "code-eval-executions",
+      "name": "Agreguj i Oceń Egzekucje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-more-exec",
+              "leftValue": "={{ $json.hasMore }}",
+              "operator": {
+                "operation": "equals",
+                "type": "boolean"
+              },
+              "rightValue": true
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
+        },
+        "options": {}
+      },
+      "id": "if-more-executions",
+      "name": "Czy Kolejna Strona Egzekucji?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2464,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const curr = $input.first()?.json || {};\nreturn [{\n  json: {\n    cursor: curr.nextCursor,\n    page: curr.page,\n    dailyCounts: curr.dailyCounts,\n    totalProcessed: curr.totalProcessed\n  }\n}];"
+      },
+      "id": "code-next-executions-cursor",
+      "name": "Kolejny Kursor Egzekucji",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2688,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('⚙️ Konfiguracja').first()?.json || {};\nconst targetDate = cfg.targetDate;\nconst wfState = $('Zbierz i Oceń Workflows').last()?.json || {};\nconst wfMap = wfState.workflowMap || {};\nconst execState = $('Agreguj i Oceń Egzekucje').last()?.json || {};\nconst counts = execState.dailyCounts || {};\nconst selfId = String($workflow.id);\n\nconst allIds = new Set([...Object.keys(wfMap), ...Object.keys(counts)]);\nconst results = [];\n\nfor (const wfId of allIds) {\n  if (wfId === selfId) continue;\n  const meta = wfMap[wfId] || { name: `[Workflow Usunięty] (${wfId})`, active: false };\n  const c = counts[wfId] || { total: 0, success: 0 };\n\n  results.push({\n    json: {\n      date: targetDate,\n      workflow_id: wfId,\n      workflow_name: meta.name,\n      daily_executions: c.total,\n      daily_success_count: c.success,\n      is_active: Boolean(meta.active)\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "code-compose-results",
+      "name": "Skomponuj Wyniki",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2688,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "cachedResultName": "Audyt Workflow - Dzienne Uruchomienia",
+          "mode": "id",
+          "value": "={{ $('Ustal Table ID').first().json.tableId }}"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "save-to-datatable",
+      "name": "Zapisz do Data Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        3360,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pobierz wszystkie zapisane wiersze\nconst savedRows = $input.all();\n\nconst cfg = $('⚙️ Konfiguracja').first()?.json || {};\nconst tableId = $('Ustal Table ID').first()?.json?.tableId;\nconst execState = $('Agreguj i Oceń Egzekucje').last()?.json || {};\n\nconst targetDate = cfg.targetDate || '';\nconst retentionDays = Number(cfg.retentionDays) || 90;\nconst cutoff = DateTime.now().setZone('Europe/Warsaw').minus({ days: retentionDays }).startOf('day');\n\n// Zwracamy DOKŁADNIE JEDEN element z parametrami retencji i raportu\nreturn [{\n  json: {\n    tableId: String(tableId),\n    targetDate: targetDate,\n    retentionBeforeDate: cutoff.toFormat('yyyy-MM-dd'),\n    retentionBeforeISO: cutoff.toUTC().toISO(),\n    workflowsTracked: savedRows.length,\n    totalExecutions: Number(execState.totalProcessed) || 0,\n    timestamp: DateTime.now().setZone('Europe/Warsaw').toISO()\n  }\n}];"
+      },
+      "id": "code-aggregate-report",
+      "name": "Agreguj Raport i Przygotuj Retencję",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3584,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pobieramy dane raportu z bezpośrednio poprzedzającego węzła agregacji\nconst report = $('Agreguj Raport i Przygotuj Retencję').first()?.json || {};\n\nreturn [{\n  json: {\n    success: true,\n    message: 'Audyt dziennych uruchomień zakończony pomyślnie',\n    auditedDate: report.targetDate,\n    workflowsTracked: report.workflowsTracked || 0,\n    totalExecutions: report.totalExecutions || 0,\n    retentionPurgedBefore: report.retentionBeforeDate,\n    timestamp: report.timestamp || DateTime.now().setZone('Europe/Warsaw').toISO()\n  }\n}];"
+      },
+      "id": "code-summary",
+      "name": "Wynik Audytu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4032,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('⚙️ Konfiguracja').first().json.dataTableName }}",
+        "columns": {
+          "column": [
+            {
+              "name": "date"
+            },
+            {
+              "name": "workflow_id"
+            },
+            {
+              "name": "workflow_name"
+            },
+            {
+              "name": "daily_executions",
+              "type": "number"
+            },
+            {
+              "name": "daily_success_count",
+              "type": "number"
+            },
+            {
+              "name": "is_active",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "7d09e792-4a22-4322-9a21-c58ab09aef24",
+      "name": "Zapewnij Tabelę Audytu",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Ustal Table ID').first().json.tableId }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "date",
+              "keyValue": "={{ $('⚙️ Konfiguracja').first().json.targetDate }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5b585676-b7ca-4db2-b723-413307f00d21",
+      "name": "Wyczyść Istniejące Wpisy z Dnia",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2912,
+        208
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.tableId }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "date",
+              "condition": "lt",
+              "keyValue": "={{ $json.retentionBeforeDate }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "94be354e-75c6-42ea-b879-96c59ff9f7bc",
+      "name": "Usuń Starsze niż Okres Retencji",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        3808,
+        208
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wyczyść Istniejące Wpisy z Dnia zwraca usunięte wiersze - do zapisu przekazujemy\n// świeżo skomponowane wyniki, nie wyjście z kasowania.\nreturn $('Skomponuj Wyniki').all();"
+      },
+      "id": "9f96448b-7c41-42a4-91cc-28c31f31aac5",
+      "name": "Przekaż Wyniki do Zapisu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3136,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📐 Założenia raportu – jak czytać tabelę\n\n**Wiersz** = (dzień audytowany w strefie Europe/Warsaw, workflow). Obejmuje wszystkie workflowy istniejące w chwili audytu oraz usunięte, które miały egzekucje tego dnia (`[Workflow Usunięty] (id)`). Workflow audytu pomija sam siebie.\n\n**Przypisanie do dnia** – po `startedAt`. Uruchomienie z cronem na 00:00, które wystartuje ułamek sekundy wcześniej, trafi do poprzedniego dnia (jednego dnia 0, następnego 2).\n\n**Liczone są tylko egzekucje zapisane w bazie n8n.** Workflow z `saveDataSuccessExecution: none` (lub takim ustawieniem domyślnym instancji) pokaże 0 mimo że działa; to samo dotyczy egzekucji usuniętych przez pruning. ➜ **0 w tabeli ≠ „nie uruchomił się”.**\n\n**`daily_executions`** – wszystkie statusy i wszystkie tryby (`trigger`, `webhook`, `error`, `manual`, `retry`). Ręczne testy i ponowienia zawyżają licznik.\n\n**`daily_success_count`** – tylko status `success`. Różnica `daily_executions − daily_success_count` to błędy (`error`/`crashed`/`canceled`), ale też egzekucje wciąż `running`/`waiting` w chwili audytu (08:00). Nie każda różnica to awaria.\n\n**`is_active`** – stan w chwili audytu, nie w audytowanym dniu (istotne przy backfillu).\n\n**Workflowy zarchiwizowane** – jeśli API je zwraca, pojawiają się codziennie jako wiersze z zerami.\n\n**Brak alertów merytorycznych** – raport tylko zbiera fakty. Nieudany backup czy przegląd nie wyśle powiadomienia; error workflow reaguje wyłącznie na awarię samego audytu. Interpretacja należy do odbiorcy tabeli.",
+        "height": 368,
+        "width": 1800,
+        "color": 4
+      },
+      "id": "8529a49e-1287-400b-8cec-5ed3ebdbad27",
+      "name": "Założenia Raportu",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2048,
+        -208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Agreguj i Oceń Egzekucje": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Czy Kolejna Strona Egzekucji?",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Czy Kolejna Strona Egzekucji?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Kolejny Kursor Egzekucji",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "node": "Skomponuj Wyniki",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Czy Kolejna Strona Workflows?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Kolejny Kursor Workflows",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Inicjalizacja Egzekucji",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Inicjalizacja Egzekucji": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Pobierz Stronę Egzekucji",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Inicjalizacja Workflows": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Pobierz Stronę Workflows",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Kolejny Kursor Egzekucji": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Pobierz Stronę Egzekucji",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Kolejny Kursor Workflows": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Pobierz Stronę Workflows",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "⚙️ Konfiguracja",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Pobierz Stronę Egzekucji": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Agreguj i Oceń Egzekucje",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Pobierz Stronę Workflows": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Zbierz i Oceń Workflows",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "⚙️ Konfiguracja",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Ustal Table ID": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Inicjalizacja Workflows",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Zapisz do Data Table": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Agreguj Raport i Przygotuj Retencję",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "⚙️ Konfiguracja": {
+      "main": [
+        [
+          {
+            "node": "Zapewnij Tabelę Audytu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zapewnij Tabelę Audytu": {
+      "main": [
+        [
+          {
+            "node": "Ustal Table ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zbierz i Oceń Workflows": {
+      "main": [
+        [
+          {
+            "node": "Czy Kolejna Strona Workflows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agreguj Raport i Przygotuj Retencję": {
+      "main": [
+        [
+          {
+            "node": "Usuń Starsze niż Okres Retencji",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Usuń Starsze niż Okres Retencji": {
+      "main": [
+        [
+          {
+            "node": "Wynik Audytu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skomponuj Wyniki": {
+      "main": [
+        [
+          {
+            "node": "Wyczyść Istniejące Wpisy z Dnia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wyczyść Istniejące Wpisy z Dnia": {
+      "main": [
+        [
+          {
+            "node": "Przekaż Wyniki do Zapisu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Przekaż Wyniki do Zapisu": {
+      "main": [
+        [
+          {
+            "node": "Zapisz do Data Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "D2fQlQa5dYGwz96E",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true,
+    "timeSavedPerExecution": 5
+  },
+  "versionId": "59012f62-4e41-40e2-a660-adb47f19ee2d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "28d7510768e03007676fa0153dd3d5b6186cda78c59b390e15da08801f033954"
+  },
+  "nodeGroups": [],
+  "id": "AFgP3JRFBADmXCKm",
+  "tags": [
+    {
+      "updatedAt": "2026-10-03T16:48:50.040Z",
+      "createdAt": "2026-10-03T16:48:50.040Z",
+      "id": "TCeN9adg0e9GzszX",
+      "name": "System"
+    },
+    {
+      "updatedAt": "2026-10-03T16:49:04.740Z",
+      "createdAt": "2026-10-03T16:49:04.740Z",
+      "id": "o4ZeDEFWx4Q6vCb6",
+      "name": "Audit"
+    }
+  ]
+}
