@@ -1,0 +1,72 @@
+ 0. Wstęp — 2 min
+
+ - Czym jest Codex: agent, który czyta repo, edytuje pliki i uruchamia komendy
+ - Zmiana myślenia: to nie autocomplete, tylko „junior, któremu dajesz zadanie” — jakość wyniku = jakość polecenia + kontekstu.
+ - Dodać do czatu "Codex - wymiana doświadczeń"
+
+ 1. Start i bezpieczeństwo — 5 min
+
+ - Uruchomienie w katalogu repo (codex w terminalu).
+ - Tryby uprawnień / sandbox: tylko odczyt → auto (edycje + komendy w workspace) → pełny dostęp. Zasada zespołowa: startujemy w trybie z zatwierdzaniem, pełny dostęp tylko świadomie.
+ - Wybór modelu i poziomu rozumowania (/model) — szybki do prostych rzeczy, mocniejszy do debugowania.
+ - Zawsze pracujemy na branchu / z czystym git status → łatwy rollback.
+ - Odpowiedzialność za agenta spoczywa na was.
+
+ 2. AGENTS.md — kontekst projektu — 4 min (demo)
+
+ - /init generuje AGENTS.md; pokazać, co warto dopisać ręcznie dla repo testowego:
+   - jak uruchomić testy (npx playwright test path), jaki browser/projekt,
+   - konwencje: Page Object Model, lokatory (getByRole/data-testid zamiast XPath), brak waitForTimeout,
+   - gdzie są fixture'y, dane testowe, helpery (np. custom poll()),
+   - czego nie ruszać (konfiguracja CI, sekrety, .env).
+ - Przekaz: AGENTS.md wspólny dla zespołu, w repo → wszyscy dostają spójne wyniki.
+
+ 3. Jak pisać polecenia — 4 min
+
+ Wzór na slajdzie: Kontekst → Zadanie → Ograniczenia → Jak sprawdzić.
+ - ❌ „napisz test logowania”
+ - ✅ „Na wzór tests/cart.spec.ts i pages/LoginPage.ts napisz test negatywnego logowania (złe hasło, pusty email). Użyj istniejącego POM, lokatorów getByRole. Po napisaniu uruchom npx playwright test tests/login.spec.ts i popraw do zielonego.”
+ - Wskazywanie plików (@plik), wklejanie screenshotów / fragmentów logów, prośba o plan przed zmianą przy większych zadaniach.
+
+ 4. Scenariusze testerskie — 12 min (główna część, demo)
+
+ Pokazać 3 na żywo, czwarty jako slajd:
+ 1. Nowy test z istniejących wzorców (4 min) — prompt z punktu 3; Codex pisze test, uruchamia, poprawia.
+ 2. Analiza padającego / flaky testu (4 min) — wklejamy output błędu lub wskazujemy trace/raport; prosimy o diagnozę przyczyny zanim coś zmieni („nie dodawaj sleepów ani retry, znajdź przyczynę”).
+ 3. Refaktoryzacja (3 min) — wyciągnięcie powtarzających się kroków do Page Object / fixture'a w kilku plikach + uruchomienie testów po zmianie.
+ 4. (slajd) Code review i inne: /review zmian przed PR, generowanie danych testowych, przypadki brzegowe z wymagań/user story, tłumaczenie nieznanego kodu, skrypty pomocnicze; tryb nieinteraktywny (codex exec) do automatyzacji; MCP (np. Playwright MCP do eksploracji aplikacji w przeglądarce) — jako „następny krok”.
+ 
+ 5. Pułapki z doświadczenia — 5 min
+
+ Najważniejsza część „miękka” — warto opowiedzieć na własnych przykładach.
+
+ a) Dąży do celu „po trupach” (główny przekaz)
+ - Dostaje cel „test ma być zielony” → osiągnie go, nawet kosztem sensu: osłabi/usunie asercję, doda test.skip, waitForTimeout(5000), force: true, zwiększy timeout, złapie wyjątek i zignoruje, zmieni dane oczekiwane pod błędny wynik aplikacji.
+ - Potrafi „naprawić” test, który słusznie wykrył bug w aplikacji — a my właśnie chcemy, żeby padał.
+ - Wychodzi poza zakres: przy okazji refaktoruje inne pliki, zmienia config Playwrighta, helpery wspólne dla całego zespołu.
+ - Jak się bronić: w promptcie mówić czego nie wolno („nie zmieniaj asercji”, „nie dodawaj sleepów/retry/skip”, „zmieniaj tylko plik X”), prosić o diagnozę/plan przed zmianą, przy niepewności kazać się zatrzymać i zapytać. Stałe zakazy wpisać do AGENTS.md.
+
+ b) Zawsze weryfikuj, co zrobił
+ - Czytaj git diff przed commitem — odpowiadasz za kod Ty, nie Codex.
+ - „Uruchomiłem testy, przechodzą” — sprawdź sam; bywa, że uruchomił inny zakres, inny projekt/browser albo zinterpretował wynik zbyt optymistycznie.
+ - Test zielony ≠ dobry test: czy asercje coś realnie sprawdzają? Szybki trik: celowo zepsuj warunek i zobacz, czy test spadnie.
+ - Weryfikuj „fakty” o API/bibliotekach — potrafi wymyślić nieistniejącą metodę lub opcję.
+
+ c) Dobieraj model do zadania
+ - Nie używaj najmocniejszego modelu / wysokiego poziomu rozumowania do banalnych rzeczy (zmiana nazwy, prosty lokator, formatowanie) — wolniej, drożej / szybciej zjada limity, a wynik nie lepszy.
+ - Mocny model zostaw na: debug flaky testów, analizę nieznanego kodu, większe refaktory, planowanie.
+ - Banalną zmianę w jednej linii często szybciej zrobić samemu.
+
+ d) Pozostałe
+ - Małe, konkretne zadania > jedno wielkie „napisz mi cały suite”.
+ - Długa sesja traci kontekst / zaczyna się mylić → nowa sesja z lepszym poleceniem zamiast kolejnych poprawek.
+ - Gdy idzie w złą stronę — przerwij od razu, nie czekaj aż skończy.
+ - Nie wklejamy sekretów, tokenów, danych produkcyjnych / osobowych.
+ - Kopiuje istniejące wzorce — także złe; jeśli repo ma stare XPath-y i sleepy, powieli je, chyba że mu powiesz inaczej.
+
+ 6. Podsumowanie + zadanie domowe — 1 min
+
+ - Wysłać ten plik - Tomek
+ - AGENTS.md w repo, jeśli już jest to przeczytać a jak są uwagi to otworzyć PR ze zmianami.
+ - Zadanie na ten tydzień: każdy użyje Codexa do 1 realnego zadania (nowy test lub naprawa flaky) i przyniesie na daily/retro: prompt + co zadziałało / co nie.
+ - Ankieta po szkoleniu - Tomek
