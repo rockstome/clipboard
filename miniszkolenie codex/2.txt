@@ -1,0 +1,37 @@
+jak pracuje przy poprawkach podczas regresji. po jednym problemie review manualnie i stage. to powtarzam. a jak robie PR to /review i jeszcze raz przegladam calosc w bitbucket.
+sugeruje zeby jednak czlowiek byl w tej petli. niechcemy skonczyc z kodem ktory rozumie tylko AI.
+w blueoptimie widac ze ilosc kodu wzrasta a maintinability spada...
+skille, kiedy powtarzasz cos ciagle to powinienes uzyc skilla. codex ich uzywa kiedy uzna ze powinien, mozna miec skile uzytkownika i repo, ze sluza do czesto powtarzanych akcji, tak zeby nie wpisywac w prompcie tego samego. specjalistyczna wiedza do specjalistycznych zadan.
+subagenci, dlaczego warto stosowac (okno contextu glownego agenta sie nie zapelni tak szybko)
+
+"Przeanalizuj zmiany w tym PR (różnice między bieżącym branchem a main) pod kątem nowego testu E2E.
+
+Uruchom osobnego sub-agenta dla każdego z poniższych punktów, poczekaj na zakończenie pracy wszystkich, a następnie przedstaw syntetyczne podsumowanie z konkretnymi uwagami i rekomendacjami (wskazując pliki i linie kodu):
+
+1. Bezpieczeństwo (Security):
+- Czy w kodzie, konfiguracji lub raportach nie ma zahardkodowanych wrażliwych danych (hasła, tokeny API, klucze, dane testowe PII)?
+- Czy logi z przebiegu testu lub artefakty (screeny, nagrania wideo) nie ujawniają poufnych informacji?
+
+2. Jakość kodu (Code Quality & Clean Code):
+- Czy architektura testu jest przejrzysta (np. zachowany wzorzec Page Object Model lub App Actions)?
+- Czy kod jest czytelny, pozbawiony zbędnych powtórzeń (DRY) i właściwie zorganizowany pod kątem asercji?
+
+3. Błędy logiczne i pokrycie (Bugs & Coverage):
+- Czy test poprawnie weryfikuje zakładany scenariusz biznesowy, czy może przechodzi "na pusto" (np. fałszywie pozytywne asercje, brak oczekiwania na kluczowy stan)?
+- Czy asercje sprawdzają faktyczny stan końcowy, a nie tylko obecność powierzchownego elementu w DOM?
+
+4. Warunki wyścigu i asynchroniczność (Race conditions & Timing):
+- Czy występują twarde pauzy (np. sleep, waitForTimeout), zamiast dynamicznego oczekiwania na stan DOM/odpowiedź sieciową?
+- Czy wszystkie operacje asynchroniczne (await, Promise) są poprawnie obsłużone i nie wywołują wyścigów przy ładowaniu zasobów lub animacjach?
+
+5. Niestabilność testu (Test Flakiness):
+- Czy selektory są odporne na zmiany w UI (np. użycie data-testid, ról ARIA i tekstu zamiast kruchych ścieżek XPath/CSS opartych na klasach stylowych)?
+- Czy test jest w pełni odizolowany (nie zależy od stanu poprzednich testów, kolejności uruchomienia ani danych, które mogły zostać zmodyfikowane)?
+
+6. Utrzymywalność kodu (Maintainability):
+- Jak kosztowna będzie modyfikacja tego testu, gdy zmieni się drobny detal w UI lub flow użytkownika?
+- Czy kod i użyte helpery/fixtures są łatwe do rozbudowy i ponownego wykorzystania przez resztę zespołu?"
+
+mcp zewnetrze toole
+playwright-cli vs mcp-playwright
+chrome devtools mcp

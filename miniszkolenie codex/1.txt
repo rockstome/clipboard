@@ -64,6 +64,7 @@ Trzymac sie: Plan → Code → Commit
  - Gdy idzie w złą stronę — przerwij od razu, nie czekaj aż skończy.
  - Nie wklejamy sekretów, tokenów, danych produkcyjnych / osobowych.
  - Kopiuje istniejące wzorce — także złe; jeśli repo ma stare XPath-y i sleepy, powieli je, chyba że mu powiesz inaczej.
+ - Moze sie zdarzyć że zadanie zajmie 5 minut + 1h poprawek co sumarycznie wyjdzie dlużej niż robić samemu. Wtedy postaraj sie ustalić czemu były problemy i zapobiegnij im w przyszłości.
 
  6. Podsumowanie + zadanie domowe — 1 min
 
