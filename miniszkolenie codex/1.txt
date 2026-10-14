@@ -30,6 +30,7 @@
 
  4. Scenariusze testerskie — 12 min (główna część, demo)
 
+Trzymac sie: Plan → Code → Commit
  Pokazać 3 na żywo, czwarty jako slajd:
  1. Nowy test z istniejących wzorców (4 min) — prompt z punktu 3; Codex pisze test, uruchamia, poprawia.
  2. Analiza padającego / flaky testu (4 min) — wklejamy output błędu lub wskazujemy trace/raport; prosimy o diagnozę przyczyny zanim coś zmieni („nie dodawaj sleepów ani retry, znajdź przyczynę”).
