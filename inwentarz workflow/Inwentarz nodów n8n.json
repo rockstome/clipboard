@@ -1,0 +1,377 @@
+{
+  "name": "Inwentarz nodów n8n",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "55724415-8d7c-408e-90f3-f5a7f6e94f4e",
+      "name": "Uruchom ręcznie",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-base-url",
+              "name": "baseUrl",
+              "value": "http://192.168.1.91:5678/api/v1",
+              "type": "string"
+            },
+            {
+              "id": "cfg-page-size",
+              "name": "pageSize",
+              "value": 250,
+              "type": "number"
+            },
+            {
+              "id": "cfg-table-name",
+              "name": "tableName",
+              "value": "Inwentarz nodów",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "da1fe2b4-cafc-4341-9226-005ce143441b",
+      "name": "Konfiguracja",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Konfiguracja').first().json.baseUrl }}/workflows",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "={{ $('Konfiguracja').first().json.pageSize }}"
+            },
+            {
+              "name": "excludePinnedData",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "cursor",
+                    "value": "={{ $response.body.nextCursor }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.nextCursor }}",
+              "limitPagesFetched": true
+            }
+          }
+        }
+      },
+      "id": "9f016267-01dd-46e9-9e6e-bd8501f259e7",
+      "name": "Pobierz workflowy (API, paginacja)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "n8nApi": {
+          "id": "AAwZBQVnAvUuCBKA",
+          "name": "n8n account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "clear",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Utwórz tabelę (jeśli brak)').first().json.id }}"
+        }
+      },
+      "id": "4b8f3a11-3600-4a64-a980-0e38a1f3aeb5",
+      "name": "Wyczyść tabelę",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        896,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ustawienia\nconst INCLUDE_ARCHIVED = false;\nconst SKIP_TYPES = ['n8n-nodes-base.stickyNote'];\n\nconst pages = $('Pobierz workflowy (API, paginacja)').all();\nconst scannedAt = new Date().toISOString();\nconst stats = {};\nconst seenWf = new Set();\n\nfor (const page of pages) {\n  const list = Array.isArray(page.json.data) ? page.json.data : [];\n  for (const wf of list) {\n    if (!wf || !wf.id || seenWf.has(wf.id)) continue;\n    if (wf.isArchived && !INCLUDE_ARCHIVED) continue;\n    seenWf.add(wf.id);\n    for (const n of wf.nodes || []) {\n      if (!n.type || SKIP_TYPES.includes(n.type)) continue;\n      if (!stats[n.type]) stats[n.type] = { occurrences: 0, workflows: new Map(), versions: new Set() };\n      const s = stats[n.type];\n      s.occurrences += 1;\n      s.workflows.set(wf.id, wf.name);\n      s.versions.add(String(n.typeVersion));\n    }\n  }\n}\n\nfunction category(type) {\n  if (/trigger$/i.test(type)) return 'trigger';\n  if (type.startsWith('@n8n/n8n-nodes-langchain.')) return 'ai';\n  if (type.startsWith('n8n-nodes-base.')) return 'core';\n  return 'community';\n}\n\nreturn Object.entries(stats)\n  .map(([nodeType, s]) => ({\n    json: {\n      nodeType,\n      category: category(nodeType),\n      occurrences: s.occurrences,\n      workflowCount: s.workflows.size,\n      workflows: [...s.workflows.values()].sort().join(', '),\n      typeVersions: [...s.versions].sort().join(', '),\n      scannedAt,\n    },\n  }))\n  .sort((a, b) => b.json.workflowCount - a.json.workflowCount || b.json.occurrences - a.json.occurrences || a.json.nodeType.localeCompare(b.json.nodeType));\n"
+      },
+      "id": "9ed2dfbc-b4d6-4e06-b641-c72bc1a86287",
+      "name": "Zlicz typy nodów",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Utwórz tabelę (jeśli brak)').first().json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "nodeType": "={{ $json.nodeType }}",
+            "category": "={{ $json.category }}",
+            "occurrences": "={{ $json.occurrences }}",
+            "workflowCount": "={{ $json.workflowCount }}",
+            "workflows": "={{ $json.workflows }}",
+            "typeVersions": "={{ $json.typeVersions }}",
+            "scannedAt": "={{ $json.scannedAt }}"
+          },
+          "schema": [
+            {
+              "id": "nodeType",
+              "displayName": "nodeType",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "occurrences",
+              "displayName": "occurrences",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "workflowCount",
+              "displayName": "workflowCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "workflows",
+              "displayName": "workflows",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "typeVersions",
+              "displayName": "typeVersions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scannedAt",
+              "displayName": "scannedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0d197831-4432-45cc-a915-793eef2be49b",
+      "name": "Zapisz do tabeli",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1344,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Inwentarz nodów\nPobiera wszystkie workflowy przez publiczne API n8n (paginacja po `cursor`), zlicza typy nodów i nadpisuje Data Table (tworzona automatycznie, jeśli nie istnieje).\n\n**Konfiguracja:** `baseUrl` – adres API n8n (np. `http://<host>:5678/api/v1`), ustaw dla swojej instancji. `tableName` – nazwa tabeli.\n\n**Na innej instancji:** zmień `baseUrl` w *Konfiguracja* i podepnij credential n8n API w *Pobierz workflowy*.",
+        "height": 220,
+        "width": 520
+      },
+      "id": "b15c4716-5842-4820-9f91-a3f481e82e26",
+      "name": "Sticky Note bcd5a5ba",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        208,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $json.tableName }}",
+        "columns": {
+          "column": [
+            {
+              "name": "nodeType"
+            },
+            {
+              "name": "category"
+            },
+            {
+              "name": "occurrences",
+              "type": "number"
+            },
+            {
+              "name": "workflowCount",
+              "type": "number"
+            },
+            {
+              "name": "workflows"
+            },
+            {
+              "name": "typeVersions"
+            },
+            {
+              "name": "scannedAt",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "c7ef9565-6bd0-4d26-b50a-504bae6101a5",
+      "name": "Utwórz tabelę (jeśli brak)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        0
+      ],
+      "executeOnce": true
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Uruchom ręcznie": {
+      "main": [
+        [
+          {
+            "node": "Konfiguracja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pobierz workflowy (API, paginacja)": {
+      "main": [
+        [
+          {
+            "node": "Wyczyść tabelę",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wyczyść tabelę": {
+      "main": [
+        [
+          {
+            "node": "Zlicz typy nodów",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zlicz typy nodów": {
+      "main": [
+        [
+          {
+            "node": "Zapisz do tabeli",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Konfiguracja": {
+      "main": [
+        [
+          {
+            "node": "Utwórz tabelę (jeśli brak)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Utwórz tabelę (jeśli brak)": {
+      "main": [
+        [
+          {
+            "node": "Pobierz workflowy (API, paginacja)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "8a60b2c8-037e-4c2b-8584-9aef5385738b",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "28d7510768e03007676fa0153dd3d5b6186cda78c59b390e15da08801f033954"
+  },
+  "nodeGroups": [],
+  "id": "YXKCmGTQ893Hh6k1",
+  "tags": []
+}
